@@ -10,8 +10,8 @@ from bari2d.env.contact_model import ContactGraph, ContactModel, oriented_boxes_
 from bari2d.env.field import LEFT_BANK, RIGHT_BANK, GapField, GapGenerator
 from bari2d.env.load_evaluator import FastLoadEvaluator, IncrementalLoadEvaluator, LoadTestResult
 from bari2d.env.robot import ACTION_COUNT, DiscreteAction, RobotState
-from bari2d.env.sensors import ir_distances, ir_ray_count
-from bari2d.utils.config import EnvironmentConfig
+from bari2d.env.sensors import cliff_sensor_direction, ir_distances, ir_ray_count
+from bari2d.utils.config import BEACON_FEATURE_SIZE, EnvironmentConfig
 
 
 @dataclass(frozen=True)
@@ -20,6 +20,7 @@ class ObservationLayout:
     strain: slice
     action_history: slice
     internal: slice
+    beacon: slice
     goal: slice
     latent: slice
     size: int
@@ -39,11 +40,13 @@ def make_observation_layout(config: EnvironmentConfig) -> ObservationLayout:
     start = action_history.stop
     internal = slice(start, start + 6)
     start = internal.stop
+    beacon = slice(start, start + (BEACON_FEATURE_SIZE if config.beacon.enabled else 0))
+    start = beacon.stop
     goal = slice(start, start + 1)
     start = goal.stop
     latent = slice(start, start + config.latent_dim)
     start = latent.stop
-    return ObservationLayout(ir, strain, action_history, internal, goal, latent, start, history, ray_count)
+    return ObservationLayout(ir, strain, action_history, internal, beacon, goal, latent, start, history, ray_count)
 
 
 class BridgeEnv:
@@ -77,6 +80,10 @@ class BridgeEnv:
         self._strain_history = np.zeros((self.config.robot.count, self.config.sensor.history), dtype=np.float32)
         self._action_history = np.full((self.config.robot.count, self.config.sensor.history), int(DiscreteAction.IDLE), dtype=np.int64)
         self._previous_contacts: set[frozenset[int | str]] = set()
+        self._beacon_source_id: int | None = None
+        self._beacon_edge_direction = np.zeros(2, dtype=float)
+        self._beacon_age = 0
+        self._beacon_features = np.zeros((self.config.robot.count, BEACON_FEATURE_SIZE), dtype=np.float32)
         self._total_motion = 0.0
         self._fallen_count = 0
         self._used_robots: set[int] = set()
@@ -118,10 +125,15 @@ class BridgeEnv:
         self._fallen_count = 0
         self._used_robots.clear()
         self._previous_contacts = set(self.graph.edges)
+        self._beacon_source_id = None
+        self._beacon_edge_direction.fill(0.0)
+        self._beacon_age = 0
+        self._beacon_features.fill(0.0)
         self._ir_history.fill(1.0)
         self._strain_history.fill(0.0)
         self._action_history.fill(int(DiscreteAction.IDLE))
         self._update_histories()
+        self._update_beacon()
         return self.observations(), self.info()
 
     def _configure_episode_randomization(self) -> None:
@@ -281,6 +293,8 @@ class BridgeEnv:
         old_fallen = sum(robot.fallen for robot in self.robots)
         old_failures = self.contact_model.anchor_failures
         previously_used = len(self._used_robots)
+        old_beacon_source = self._beacon_source_id
+        old_beacon_distance = self._mean_beacon_distance()
         newly_anchored = 0
         climb_layers = {
             robot.robot_id: min(robot.layer + 1, self.config.robot.max_layer)
@@ -332,6 +346,7 @@ class BridgeEnv:
         self.current_capacity = fast_result.capacity
         self.step_count += 1
         self._update_histories()
+        beacon_activated = self._update_beacon()
 
         accurate_capacity: float | None = None
         success = False
@@ -351,6 +366,7 @@ class BridgeEnv:
         new_quality = min(self.current_capacity / max(self.target_load, 1.0e-9), 1.0)
         energy_delta = sum(robot.energy for robot in self.robots) - old_energy
         collapsed = sum(robot.fallen for robot in self.robots) - old_fallen
+        new_beacon_distance = self._mean_beacon_distance()
         reward_config = self.config.reward
         reward_components = {
             "span": reward_config.span_delta * (self.current_progress - old_progress),
@@ -361,6 +377,15 @@ class BridgeEnv:
             "robot_use": -reward_config.robot_use_penalty * (len(self._used_robots) - previously_used),
             "collapse": -reward_config.collapse_penalty * collapsed,
             "success": reward_config.success_reward if success else 0.0,
+            "beacon_discovery": reward_config.beacon_discovery_reward if beacon_activated else 0.0,
+            "beacon_gather": reward_config.beacon_gather_delta
+            * (
+                0.0
+                if old_beacon_source != self._beacon_source_id
+                or old_beacon_distance is None
+                or new_beacon_distance is None
+                else old_beacon_distance - new_beacon_distance
+            ),
         }
         self._total_motion += energy_delta
         self._fallen_count = sum(robot.fallen for robot in self.robots)
@@ -404,6 +429,97 @@ class BridgeEnv:
             self._strain_history[robot.robot_id, -1] = np.clip(noisy_strain / strain_scale, 0.0, 2.0)
             self._action_history[robot.robot_id, -1] = robot.previous_action
 
+    def _update_beacon(self) -> bool:
+        """Latch the first cliff detector, then distribute a bounded-hop local beacon."""
+        if not self.config.beacon.enabled:
+            self._beacon_features.fill(0.0)
+            return False
+        if self._beacon_source_id is not None and self.robots[self._beacon_source_id].fallen:
+            self._beacon_source_id = None
+            self._beacon_age = 0
+            self._beacon_edge_direction.fill(0.0)
+
+        activated = False
+        if self._beacon_source_id is None:
+            detections = [
+                (robot.robot_id, reading)
+                for robot in self.robots
+                if not robot.fallen
+                if (
+                    reading := cliff_sensor_direction(
+                        robot, self.robots, self.field, self.config.robot, self.config.sensor
+                    )
+                ) is not None
+            ]
+            if detections:
+                source_id, (direction, _) = min(detections, key=lambda item: (item[1][1], item[0]))
+                self._beacon_source_id = source_id
+                self._beacon_edge_direction = direction
+                self._beacon_age = 0
+                activated = True
+
+        self._beacon_features.fill(0.0)
+        if self._beacon_source_id is None:
+            return activated
+
+        self._beacon_age += 1
+        source_id = self._beacon_source_id
+        hops, parents = self._beacon_relay_paths(source_id)
+        for robot in self.robots:
+            hop_count = hops.get(robot.robot_id)
+            if robot.fallen or hop_count is None:
+                continue
+            if robot.robot_id == source_id:
+                direction = self._beacon_edge_direction
+            else:
+                parent = self.robots[parents[robot.robot_id]]
+                offset = parent.position - robot.position
+                direction = offset / max(float(np.linalg.norm(offset)), 1.0e-9)
+            left = np.array([-robot.heading[1], robot.heading[0]])
+            self._beacon_features[robot.robot_id] = np.array(
+                [
+                    1.0,
+                    float(direction @ robot.heading),
+                    float(direction @ left),
+                    1.0 - hop_count / (self.config.beacon.max_hops + 1.0),
+                    hop_count / max(self.config.beacon.max_hops, 1),
+                    float(robot.robot_id == source_id),
+                ],
+                dtype=np.float32,
+            )
+        return activated
+
+    def _beacon_relay_paths(self, source_id: int) -> tuple[dict[int, int], dict[int, int]]:
+        """Compute the same bounded-hop paths produced by local radio relays."""
+        max_hops = self.config.beacon.max_hops
+        communication_range = self.config.beacon.communication_range
+        hops = {source_id: 0}
+        parents: dict[int, int] = {}
+        frontier = [source_id]
+        while frontier:
+            sender_id = frontier.pop(0)
+            if hops[sender_id] >= max_hops:
+                continue
+            sender = self.robots[sender_id]
+            for receiver in self.robots:
+                if receiver.fallen or receiver.robot_id in hops:
+                    continue
+                if np.linalg.norm(receiver.position - sender.position) > communication_range:
+                    continue
+                hops[receiver.robot_id] = hops[sender_id] + 1
+                parents[receiver.robot_id] = sender_id
+                frontier.append(receiver.robot_id)
+        return hops, parents
+
+    def _mean_beacon_distance(self) -> float | None:
+        if self._beacon_source_id is None:
+            return None
+        source = self.robots[self._beacon_source_id]
+        receivers = [robot for robot in self.robots if not robot.fallen and robot.robot_id != source.robot_id]
+        if not receivers:
+            return None
+        return float(np.mean([np.linalg.norm(robot.position - source.position) for robot in receivers]))
+
     def observations(self) -> np.ndarray:
         values = np.zeros((len(self.robots), self.layout.size), dtype=np.float32)
         maximum_steering = max(np.deg2rad(self.config.robot.max_steering_deg), 1.0e-9)
@@ -423,6 +539,8 @@ class BridgeEnv:
                 ],
                 dtype=np.float32,
             )
+            if self.layout.beacon.stop > self.layout.beacon.start:
+                values[index, self.layout.beacon] = self._beacon_features[index]
             values[index, self.layout.goal] = self.target_load / max(self.config.load.max_target, 1.0e-9)
             values[index, self.layout.latent] = robot.latent
         return values
@@ -556,6 +674,12 @@ class BridgeEnv:
             "energy": self._total_motion,
             "anchor_failures": self.contact_model.anchor_failures,
             "fallen_robots": sum(robot.fallen for robot in self.robots),
+            "beacon": {
+                "active": self._beacon_source_id is not None,
+                "source_robot": self._beacon_source_id,
+                "age_steps": self._beacon_age,
+                "reachable_robots": int(np.count_nonzero(self._beacon_features[:, 0])),
+            },
             "contact_graph": self.graph.serializable_edges(),
             "morphology": [
                 {

@@ -84,6 +84,7 @@ class SharedRecurrentActor(nn.Module):
             fused_input += branch if self.use_connectivity else 0
             fused_input += branch if self.use_mechanical else layout.history
             fused_input += 6
+            fused_input += layout.beacon.stop - layout.beacon.start
             if self.use_heterogeneity:
                 fused_input += layout.latent.stop - layout.latent.start
         self.fused = nn.Sequential(nn.Linear(fused_input, config.fused_hidden), nn.Tanh())
@@ -104,6 +105,7 @@ class SharedRecurrentActor(nn.Module):
             "strain": observation[:, self.layout.strain],
             "actions": observation[:, self.layout.action_history],
             "internal": observation[:, self.layout.internal],
+            "beacon": observation[:, self.layout.beacon],
             "goal": observation[:, self.layout.goal],
             "latent": observation[:, self.layout.latent],
         }
@@ -158,6 +160,8 @@ class SharedRecurrentActor(nn.Module):
             else:
                 values.append(parts["strain"])
             values.extend((goal, parts["internal"]))
+            if parts["beacon"].shape[-1]:
+                values.append(parts["beacon"])
             if self.use_heterogeneity:
                 values.append(parts["latent"])
             fused_values = torch.cat(values, dim=-1)

@@ -91,3 +91,47 @@ def ir_distances(
         downward += float(rng.normal(0.0, sensor_config.sensor_noise))
         readings.append(float(np.clip(downward, 0.0, 1.0)))
     return np.asarray(readings, dtype=np.float32)
+
+
+def cliff_sensor_direction(
+    robot: RobotState,
+    robots: list[RobotState],
+    field: GapField,
+    robot_config: RobotConfig,
+    sensor_config: SensorConfig,
+) -> tuple[np.ndarray, float] | None:
+    """Return the nearest locally visible bank-to-gap direction, if any.
+
+    This is a planar IR-style ray test. It only asks whether a ray originating
+    at this robot crosses from its current bank into the gap.  It uses the
+    same obstacle and robot occlusion rules as the planar IR sensor; other
+    robots are only local line-of-sight blockers, never global observations.
+    """
+    origin_bank = field.bank_at(robot.position)
+    if origin_bank is None:
+        return None
+    nearest: tuple[np.ndarray, float] | None = None
+    for angle_deg in sensor_config.ir_angles_deg:
+        angle = robot.theta + np.deg2rad(angle_deg)
+        direction = np.array([np.cos(angle), np.sin(angle)], dtype=float)
+        for distance in np.arange(sensor_config.ir_step, sensor_config.ir_range + sensor_config.ir_step, sensor_config.ir_step):
+            point = robot.position + direction * distance
+            if not field.inside(point):
+                break
+            if field.bank_at(point) is None:
+                if nearest is None or distance < nearest[1]:
+                    nearest = (direction, float(distance))
+                break
+            obstacle_hit = any(
+                np.linalg.norm(point - np.array([x, y])) <= radius for x, y, radius in field.obstacles
+            )
+            robot_hit = any(
+                other.robot_id != robot.robot_id
+                and not other.fallen
+                and abs(other.layer - robot.layer) <= 1
+                and _point_in_robot(point, other, robot_config)
+                for other in robots
+            )
+            if obstacle_hit or robot_hit:
+                break
+    return nearest

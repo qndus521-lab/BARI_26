@@ -7,6 +7,9 @@ from typing import Any, TypeVar
 import yaml
 
 
+BEACON_FEATURE_SIZE = 6
+
+
 @dataclass
 class RobotConfig:
     count: int = 20
@@ -78,6 +81,17 @@ class RewardConfig:
     robot_use_penalty: float = 0.01
     collapse_penalty: float = 1.0
     success_reward: float = 10.0
+    beacon_discovery_reward: float = 0.0
+    beacon_gather_delta: float = 0.0
+
+
+@dataclass
+class BeaconConfig:
+    """Local, multi-hop cliff-beacon communication; no global actor input."""
+
+    enabled: bool = False
+    communication_range: float = 2.5
+    max_hops: int = 4
 
 
 @dataclass
@@ -95,6 +109,7 @@ class EnvironmentConfig:
     gap: GapConfig = field(default_factory=GapConfig)
     load: LoadConfig = field(default_factory=LoadConfig)
     reward: RewardConfig = field(default_factory=RewardConfig)
+    beacon: BeaconConfig = field(default_factory=BeaconConfig)
 
 
 @dataclass

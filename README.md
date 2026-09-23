@@ -168,6 +168,14 @@ Curriculum stage advances when a rolling success window reaches the configured t
 3. irregular and rotated boundaries with the full width range;
 4. friction, mass, anchor strength, sensor noise, and actuator noise randomization.
 
+### Decentralized cliff beacon
+
+`configs/beacon_structured_mappo.yaml` adds a local communication field without a central controller. The first module whose own planar IR crosses from its bank into the gap latches a beacon. Only robots within `communication_range` receive it; each receiver relays it for at most `max_hops`. The actor receives six local values: signal presence, beacon direction in its own body frame, attenuated strength, hop count, and whether it is the source. It never receives a global pose, another robot's ID, target coordinate, or contact graph. The Graph Critic remains training-only.
+
+```bash
+python scripts/train.py --config configs/beacon_structured_mappo.yaml --updates 1000 --device cuda
+```
+
 ## Outputs
 
 `runs/<name>/episodes.jsonl` stores success, gap parameters, target and measured capacity, capacity ratio, construction time, used and anchored robot counts, energy proxy, anchor failures, fallen count, maximum progress, final contact graph, final morphology, action distribution, and available branch-latent statistics. Checkpoints include actor, critic, optimizers, configuration, and update number.
