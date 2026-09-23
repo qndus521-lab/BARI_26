@@ -154,29 +154,46 @@ class BridgeEnv:
         return float(self.rng.uniform(self.config.load.target_min, self.config.load.target_max))
 
     def _initial_robots(self) -> list[RobotState]:
+        """Sample non-overlapping robot poses over the left starting bank.
+
+        The construction task still begins on one bank of the gap, but robots
+        no longer receive a pre-aligned formation.  Both positions and heading
+        are randomized on every reset, subject to the full footprint remaining
+        on the left bank and not overlapping another robot.
+        """
         count = self.config.robot.count
         robot_config = self.config.robot
-        longitudinal_left, _ = self.field.boundaries(0.0)
-        edge_center = self.field.center + self.field.normal * longitudinal_left
-        rows = max(1, int(np.floor(self.field.width / (robot_config.width * 1.5))))
-        rows = min(rows, count)
         robots: list[RobotState] = []
         for robot_id in range(count):
-            row = robot_id % rows
-            column = robot_id // rows
-            lateral = (row - (rows - 1) / 2.0) * robot_config.width * 1.35
-            backward = 0.7 + column * robot_config.length * 1.15
-            position = edge_center - self.field.normal * backward + self.field.tangent * lateral
-            if self.config.curriculum_stage >= 2:
-                position += self.rng.normal(0.0, 0.08, size=2)
-                theta = self.field.orientation + float(self.rng.normal(0.0, 0.12))
-            else:
-                theta = self.field.orientation
-            position[0] = np.clip(position[0], robot_config.length / 2.0, self.field.length - robot_config.length / 2.0)
-            position[1] = np.clip(position[1], robot_config.width / 2.0, self.field.width - robot_config.width / 2.0)
-            latent = self.rng.normal(0.0, self.config.latent_sigma, size=self.config.latent_dim).astype(np.float32)
-            robots.append(RobotState(robot_id, position.astype(float), float(theta), latent=latent))
+            candidate = self._sample_initial_robot(robot_id, robots)
+            candidate.latent = self.rng.normal(
+                0.0, self.config.latent_sigma, size=self.config.latent_dim
+            ).astype(np.float32)
+            robots.append(candidate)
         return robots
+
+    def _sample_initial_robot(self, robot_id: int, existing: list[RobotState]) -> RobotState:
+        """Draw one valid left-bank pose, rejecting gap, boundary, and overlap cases."""
+        robot_config = self.config.robot
+        # The circumscribed radius keeps every rotated footprint in the field
+        # before the more exact left-bank test below.
+        margin = 0.5 * np.hypot(robot_config.length, robot_config.width) + 1.0e-3
+        low = np.array([margin, margin], dtype=float)
+        high = np.array([self.field.length - margin, self.field.width - margin], dtype=float)
+        attempts = max(2_000, self.config.robot.count * 250)
+        for _ in range(attempts):
+            position = self.rng.uniform(low, high)
+            theta = float(self.rng.uniform(-np.pi, np.pi))
+            candidate = RobotState(robot_id, position.astype(float), theta)
+            if any(self.field.bank_at(corner) != LEFT_BANK for corner in candidate.corners(robot_config)):
+                continue
+            if any(oriented_boxes_overlap(candidate, other, robot_config) for other in existing):
+                continue
+            return candidate
+        raise RuntimeError(
+            "Could not place every robot on the left bank without overlap. "
+            "Increase the starting-bank area or reduce the robot count."
+        )
 
     def set_robot_states(self, robots: Iterable[RobotState]) -> None:
         """Install a scripted morphology for deterministic tests and research probes."""

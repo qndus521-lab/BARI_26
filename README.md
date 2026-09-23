@@ -163,8 +163,8 @@ The trainer collects team rewards with per-agent actions and log probabilities, 
 
 Curriculum stage advances when a rolling success window reaches the configured threshold:
 
-1. straight, narrow, deterministic gap and low load;
-2. randomized gap width, target, and starting poses;
+1. straight, narrow gap and low load, with randomized non-overlapping robot poses on the starting bank;
+2. randomized gap width and target load;
 3. irregular and rotated boundaries with the full width range;
 4. friction, mass, anchor strength, sensor noise, and actuator noise randomization.
 
