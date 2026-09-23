@@ -1,0 +1,32 @@
+# 수동 로봇 조종
+
+scripts/manual.py는 BARI2D 환경을 한 step씩 진행하면서 사람이 선택한 로봇 한 대에만 action을 보내는 Matplotlib 도구다. 나머지 로봇은 해당 step에 모두 IDLE을 받는다.
+
+    conda run -n bari2d python scripts/manual.py
+
+시작 시 주황색 원으로 선택 로봇을 표시한다. 로봇 본체색은 layer 0부터 10까지 달라지고, 보라색 아래쪽 삼각형은 하향 IR을 뜻한다. 로봇을 클릭하거나 좌우 화살표, [와 ] 키로 선택을 바꾼다. 화면 오른쪽에는 선택 로봇의 layer, anchor, strain, 낙하 상태, 직전 보상과 현재 유효 action이 표시된다.
+
+| 입력 | action |
+| --- | --- |
+| W / S | 전진 / 후진 |
+| A / D | 전진 좌회전 / 전진 우회전 |
+| Z / C | 후진 좌회전 / 후진 우회전 |
+| E | CLIMB |
+| Q | ANCHOR |
+| R | RELEASE |
+| Space | IDLE |
+| Home | 같은 seed로 에피소드 다시 시작 |
+| Escape | 창 닫기 |
+
+macOS에서는 고해상도 native Matplotlib 창을 그대로 사용한다. 수동 조종 창은 Matplotlib 탐색 툴바와 기본 단축키를 끄므로 조종 키가 툴바에 빼앗기지 않는다. 창을 연 직후 키가 먹지 않는 것처럼 보이면 **왼쪽 지도 영역을 한 번 클릭**하면 조종 입력으로 포커스가 돌아온다. 한글 두벌식 입력 상태여도 W/S/A/D/Z/C/E/Q/R에 대응하는 ㅈ/ㄴ/ㅁ/ㅇ/ㅋ/ㅊ/ㄷ/ㅂ/ㄱ 입력을 같은 조종키로 처리한다.
+
+Matplotlib 기본 단축키를 수동 조종 창에서 끄므로 S는 figure 저장이 아니라 후진, Q는 종료가 아니라 ANCHOR로 동작한다. 화면 하단의 저장 버튼은 현재 프레임을 manual.png에 저장하며, --output 경로를 지정했다면 그 파일에 저장한다. 종료 버튼은 창을 닫는다.
+
+로봇은 layer 0부터 layer 10까지 올라갈 수 있다. CLIMB는 앞쪽의 같은 layer 로봇을 밟아 한 layer 올라가므로 layer 1 로봇끼리도 layer 2 이상을 만들 수 있다. 별도 DESCEND action은 없으며, 높은 layer 로봇은 바로 아래 layer 로봇과 본체 면적이 겹치지 않으면 겹치는 가장 높은 하위 로봇의 한 layer 위로 자동 낙하한다. 겹치는 하위 로봇이 없으면 layer 0까지 내려가며, 앵커 상태도 이 낙하를 막지 않는다. layer는 2.5D 이산 높이 표현이며, 화면의 로봇 라벨 L0–L10으로 확인한다.
+
+초기 화면을 PNG로 저장하거나 headless 환경에서 확인하려면 다음처럼 실행한다.
+
+    MPLBACKEND=Agg conda run -n bari2d python scripts/manual.py \
+      --stage 2 --target-load 6 --output manual.png --no-show
+
+--config, --seed, --stage (1–4), --target-load 옵션으로 환경을 지정할 수 있다. action mask가 허용하지 않는 입력은 환경에서 IDLE로 바뀌며, 오른쪽 현재 허용 목록에서 확인할 수 있다.

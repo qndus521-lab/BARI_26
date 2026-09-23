@@ -1,0 +1,22 @@
+# Default BARI_26 policy: structured recurrent MAPPO with decentralized execution.
+# IR history -> traffic/connectivity branches; strain history -> mechanical branch;
+# target load -> goal latent + FiLM modulation; latents -> GRU -> shared policy.
+environment:
+  seed: 7
+  curriculum_stage: 1
+  max_steps: 1000
+  latent_sigma: 0.0
+model:
+  architecture: structured_mappo
+  branch_hidden: 48
+  fused_hidden: 64
+  recurrent_hidden: 64
+  film: true
+  use_heterogeneity: false
+training:
+  total_updates: 1000
+  rollout_steps: 400
+  learning_rate: 0.0003
+  auxiliary_coef: 0.1
+  critic: graph
+  output_dir: runs/structured_mappo
