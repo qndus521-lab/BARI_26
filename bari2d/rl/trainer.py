@@ -55,10 +55,35 @@ class Trainer:
         self.curriculum = CurriculumScheduler(config)
         self.output_dir = Path(config.training.output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.completed_updates = 0
+
+    def load_checkpoint(self, path: str | Path) -> int:
+        """Restore policy, critic, and optimizer state before continuing training.
+
+        Environment state is deliberately reset at the next rollout boundary:
+        this avoids restoring partially completed physics episodes while still
+        preserving all learnable MAPPO state and the absolute update number.
+        """
+        checkpoint_path = Path(path)
+        if not checkpoint_path.is_file():
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+        if not isinstance(checkpoint, dict) or "algorithm" not in checkpoint:
+            raise ValueError(f"Unsupported training checkpoint: {checkpoint_path}")
+        update = checkpoint.get("update")
+        if not isinstance(update, int) or update < 0:
+            raise ValueError(f"Checkpoint has an invalid update number: {checkpoint_path}")
+        self.algorithm.load_state_dict(checkpoint["algorithm"])
+        self.completed_updates = update
+        return update
 
     def train(self, updates: int | None = None) -> list[dict[str, float]]:
         training = self.config.training
-        update_count = updates if updates is not None else training.total_updates
+        target_update = updates if updates is not None else training.total_updates
+        if target_update <= self.completed_updates:
+            raise ValueError(
+                f"Requested target update {target_update} is not after restored update {self.completed_updates}"
+            )
         observation, _ = self.env.reset()
         hidden = self.actor.initial_hidden(self.env.config.robot.count, self.device)
         episode_start = np.ones(self.env.config.robot.count, dtype=np.float32)
@@ -66,7 +91,7 @@ class Trainer:
         history: list[dict[str, float]] = []
         episode_number = 0
         last_done = False
-        for update in range(1, update_count + 1):
+        for update in range(self.completed_updates + 1, target_update + 1):
             buffer = RolloutBuffer(
                 training.rollout_steps,
                 self.env.config.robot.count,
@@ -147,14 +172,15 @@ class Trainer:
             metrics["curriculum_stage"] = float(self.env.config.curriculum_stage)
             history.append(metrics)
             print(
-                f"Update {update}/{update_count} "
+                f"Update {update}/{target_update} "
                 f"actor_loss={metrics['actor_loss']:.4f} "
                 f"critic_loss={metrics['critic_loss']:.4f} "
                 f"entropy={metrics['entropy']:.4f}",
                 flush=True,
             )
-            if update % training.checkpoint_interval == 0 or update == update_count:
+            if update % training.checkpoint_interval == 0 or update == target_update:
                 self.save_checkpoint(update)
+        self.completed_updates = target_update
         return history
 
     def save_checkpoint(self, update: int) -> Path:

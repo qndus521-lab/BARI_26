@@ -176,6 +176,14 @@ Curriculum stage advances when a rolling success window reaches the configured t
 python scripts/train.py --config configs/beacon_structured_mappo.yaml --updates 1000 --device cuda
 ```
 
+To continue a stopped run, pass its latest checkpoint. `--updates` is the final
+update number, so this example continues update 200 through update 1000 without
+overwriting the earlier checkpoints:
+
+```bash
+python scripts/train.py --config configs/beacon_structured_mappo.yaml --resume runs/beacon_structured_mappo/checkpoint_000200.pt --updates 1000 --device cuda
+```
+
 ## Outputs
 
 `runs/<name>/episodes.jsonl` stores success, gap parameters, target and measured capacity, capacity ratio, construction time, used and anchored robot counts, energy proxy, anchor failures, fallen count, maximum progress, final contact graph, final morphology, action distribution, and available branch-latent statistics. Checkpoints include actor, critic, optimizers, configuration, and update number.
