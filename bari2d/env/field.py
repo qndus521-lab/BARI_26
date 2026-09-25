@@ -76,7 +76,12 @@ class GapGenerator:
 
     def generate(self, rng: np.random.Generator, stage: int = 1) -> GapField:
         config = self.config
-        if stage <= 1:
+        if config.curriculum_widths:
+            index = min(max(stage - 1, 0), len(config.curriculum_widths) - 1)
+            gap_width = float(config.curriculum_widths[index])
+            orientation = np.deg2rad(config.orientation_deg)
+            irregularity = config.irregularity if stage >= 3 else 0.0
+        elif stage <= 1:
             gap_width = config.width_min
             orientation = np.deg2rad(config.orientation_deg)
             irregularity = 0.0

@@ -84,6 +84,7 @@ class BridgeEnv:
         self._beacon_edge_direction = np.zeros(2, dtype=float)
         self._beacon_age = 0
         self._beacon_features = np.zeros((self.config.robot.count, BEACON_FEATURE_SIZE), dtype=np.float32)
+        self._idle_streak = np.zeros(self.config.robot.count, dtype=np.int64)
         self._total_motion = 0.0
         self._fallen_count = 0
         self._used_robots: set[int] = set()
@@ -129,6 +130,7 @@ class BridgeEnv:
         self._beacon_edge_direction.fill(0.0)
         self._beacon_age = 0
         self._beacon_features.fill(0.0)
+        self._idle_streak.fill(0)
         self._ir_history.fill(1.0)
         self._strain_history.fill(0.0)
         self._action_history.fill(int(DiscreteAction.IDLE))
@@ -161,6 +163,10 @@ class BridgeEnv:
             )
 
     def _sample_target_load(self) -> float:
+        staged_targets = self.config.load.curriculum_targets
+        if staged_targets:
+            index = min(max(self.config.curriculum_stage - 1, 0), len(staged_targets) - 1)
+            return float(staged_targets[index])
         if self.config.curriculum_stage <= 1:
             return self.config.load.target_min
         return float(self.rng.uniform(self.config.load.target_min, self.config.load.target_max))
@@ -232,11 +238,25 @@ class BridgeEnv:
                 masks[robot.robot_id, DiscreteAction.IDLE] = True
                 continue
             masks[robot.robot_id, DiscreteAction.RELEASE] = robot.anchored
-            masks[robot.robot_id, DiscreteAction.ANCHOR] = self.contact_model.can_anchor(robot, self.robots, self.field)
+            masks[robot.robot_id, DiscreteAction.ANCHOR] = self._anchor_action_available(robot)
             masks[robot.robot_id, DiscreteAction.CLIMB] = self._climb_support(robot) is not None
             if robot.anchored:
                 masks[robot.robot_id, :7] = False
         return masks
+
+    def _anchor_action_available(self, robot: RobotState) -> bool:
+        """Return whether a physically meaningful anchor can be made locally."""
+        if not self.contact_model.can_anchor(robot, self.robots, self.field):
+            return False
+        if not self.config.contact.anchor_requires_edge_or_contact:
+            return True
+        partner = self.contact_model.candidate_anchor(robot, self.robots, self.field)
+        if isinstance(partner, int):
+            return oriented_boxes_overlap(robot, self.robots[partner], self.config.robot)
+        if partner is None:
+            return False
+        reading = cliff_sensor_direction(robot, self.robots, self.field, self.config.robot, self.config.sensor)
+        return reading is not None and reading[1] <= self.config.contact.anchor_edge_band
 
     def _climb_support(self, robot: RobotState) -> RobotState | None:
         if robot.layer >= self.config.robot.max_layer:
@@ -286,6 +306,7 @@ class BridgeEnv:
             raise ValueError("Action outside discrete action space")
         invalid = ~masks[np.arange(len(self.robots)), action_array]
         action_array[invalid] = int(DiscreteAction.IDLE)
+        idle_violators = self._update_idle_streaks(action_array)
 
         old_progress = self.current_progress
         old_quality = min(self.current_capacity / max(self.target_load, 1.0e-9), 1.0)
@@ -386,6 +407,7 @@ class BridgeEnv:
                 or new_beacon_distance is None
                 else old_beacon_distance - new_beacon_distance
             ),
+            "idle": -reward_config.idle_penalty * idle_violators,
         }
         self._total_motion += energy_delta
         self._fallen_count = sum(robot.fallen for robot in self.robots)
@@ -397,6 +419,20 @@ class BridgeEnv:
             auxiliary_targets=self.auxiliary_targets(),
         )
         return self.observations(), float(sum(reward_components.values())), terminated, truncated, info
+
+    def _update_idle_streaks(self, actions: np.ndarray) -> int:
+        """Track local non-anchored waiting after the beacon has reached a robot."""
+        violators = 0
+        grace = max(self.config.reward.idle_grace_steps, 0)
+        for robot, action in zip(self.robots, actions):
+            robot_id = robot.robot_id
+            signal_available = self._beacon_features[robot_id, 0] > 0.0
+            if robot.fallen or robot.anchored or not signal_available or action != int(DiscreteAction.IDLE):
+                self._idle_streak[robot_id] = 0
+                continue
+            self._idle_streak[robot_id] += 1
+            violators += int(self._idle_streak[robot_id] > grace)
+        return violators
 
     def _constrain_to_field(self, robot: RobotState) -> None:
         margin_x = self.config.robot.length / 2.0

@@ -176,6 +176,17 @@ Curriculum stage advances when a rolling success window reaches the configured t
 python scripts/train.py --config configs/beacon_structured_mappo.yaml --updates 1000 --device cuda
 ```
 
+`configs/beacon_structured_mappo_v2.yaml` is the anti-collapse curriculum for
+this task. It allows bank anchors only near a locally sensed cliff edge and
+robot anchors only after footprint contact; it also penalizes prolonged idle
+steps after beacon reception. Its four stages increase the gap and load from
+1.2 / 1.0 to the final 3.0 / 3.0 specification. Start this run from scratch;
+do not resume a policy trained with the earlier, unrestricted anchor mask.
+
+```bash
+python scripts/train.py --config configs/beacon_structured_mappo_v2.yaml --updates 1000 --device cuda
+```
+
 To continue a stopped run, pass its latest checkpoint. `--updates` is the final
 update number, so this example continues update 200 through update 1000 without
 overwriting the earlier checkpoints:

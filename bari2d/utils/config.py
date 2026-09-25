@@ -46,6 +46,10 @@ class ContactConfig:
     anchor_shear_limit: float = 8.0
     anchor_rotational_stiffness: float = 0.0
     anchor_failure_probability: float = 0.0
+    # Optional training constraint: a bank anchor needs to be near its cliff
+    # edge, while a robot-to-robot anchor needs a real physical contact.
+    anchor_requires_edge_or_contact: bool = False
+    anchor_edge_band: float = 1.2
 
 
 @dataclass
@@ -58,6 +62,9 @@ class GapConfig:
     orientation_jitter_deg: float = 0.0
     irregularity: float = 0.0
     irregularity_frequency: float = 0.8
+    # When supplied, one deterministic gap width is used for each curriculum
+    # stage (the final value is reused for later stages).
+    curriculum_widths: list[float] = field(default_factory=list)
 
 
 @dataclass
@@ -69,6 +76,8 @@ class LoadConfig:
     load_step: float = 0.25
     displacement_limit: float = 2.0
     load_protocol: str = "uniform"
+    # Optional per-stage loads, analogous to GapConfig.curriculum_widths.
+    curriculum_targets: list[float] = field(default_factory=list)
 
 
 @dataclass
@@ -83,6 +92,10 @@ class RewardConfig:
     success_reward: float = 10.0
     beacon_discovery_reward: float = 0.0
     beacon_gather_delta: float = 0.0
+    # Applied per non-anchored robot after a local beacon is available and the
+    # robot has remained idle longer than the grace period.
+    idle_penalty: float = 0.0
+    idle_grace_steps: int = 5
 
 
 @dataclass
